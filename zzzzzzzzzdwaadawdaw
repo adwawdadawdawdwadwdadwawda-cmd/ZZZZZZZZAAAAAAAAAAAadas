@@ -1,0 +1,771 @@
+local settings = shared.Saved
+
+-- // Variables and Services
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Connections = {}
+local Camera = workspace.CurrentCamera
+
+local State = {
+    ["Target"] = nil,
+    ["Velocities"] = {},
+    ["Blacklisted"] = { 1, 2 },
+    ["Bypass_Blacklist"] = {},
+    ["Triggerbot"] = {
+        ["Key Toggled"] = false,
+        ["Last Click"] = tick()
+    }
+}
+
+local Cooldowns = {
+    ["[Revolver]"] = { ["Cooldown"] = 0.21 },
+    ["[Double-Barrel SG]"] = { ["Cooldown"] = 0.41 },
+    ["[TacticalShotgun]"] = { ["Cooldown"] = 0.66 },
+    ["[AUG]"] = { ["Cooldown"] = 0.51 },
+    ["[Rifle]"] = { ["Cooldown"] = 1.31 },
+    ["[Shotgun]"] = { ["Cooldown"] = 1.21 },
+    ["[Glock]"] = { ["Cooldown"] = 0.61 },
+    ["[Silencer]"] = { ["Cooldown"] = 0.44 }
+}
+State.Cooldowns = Cooldowns
+
+local ShotgunConfig = {
+    ["[Double-Barrel SG]"] = {
+        ["Bullets"] = 5,
+        ["Offset"] = CFrame.new(0, 0.35, -2.2)
+    },
+    ["[TacticalShotgun]"] = {
+        ["Bullets"] = 5,
+        ["Offset"] = CFrame.new(0, 0.25, -2.5)
+    },
+    ["[Shotgun]"] = {
+        ["Bullets"] = 5,
+        ["Offset"] = CFrame.new(0, 0.25, 2.5)
+    }
+}
+State["Shotguns"] = ShotgunConfig
+State.Overwritten = {}
+State.CurrentCharacter = nil
+State.CurrentCharacter2 = nil
+State["Speed Modifications"] = {
+    ["Current Multiplier"] = 1
+}
+
+if table.find(State.Bypass_Blacklist, LocalPlayer.UserId) then
+    State.Blacklisted = {}
+end
+
+local LastHealthChange = tick()
+
+repeat
+    task.wait()
+until workspace:FindFirstChild("Ignored") and (workspace.Ignored:FindFirstChild("Siren") and workspace.Ignored.Siren:FindFirstChild("Radius"))
+
+-- // Main Execution Block
+if shared.Loaded == nil then
+    shared.Loaded = true
+    
+    -- // Helper Functions
+    local function WorldToScreen(pos)
+        local point, onScreen = Camera:WorldToScreenPoint(pos)
+        return Vector2.new(point.X, point.Y), onScreen
+    end
+
+    local function GetMousePos()
+        return Vector2.new(Mouse.X, Mouse.Y)
+    end
+
+    local function Is_Knocked(player)
+        if player.Character then
+            return player.Character:FindFirstChild("BodyEffects")["K.O"].Value
+        else
+            return false
+        end
+    end
+
+    local function CheckVisibility(partPos, ignoreList)
+        return #Camera:GetPartsObscuringTarget({ LocalPlayer.Character.Head.Position, partPos }, ignoreList) == 0
+    end
+
+    local function GetPrediction()
+        return settings["Aimbot"]["Silent"]["Prediction"]
+    end
+
+    local function GetWeaponCategory(tool)
+        local name = tool.Name
+        return (name == "[Double-Barrel SG]" or (name == "[TacticalShotgun]" or name == "[Shotgun]")) and "Shotguns" or ((name == "[Revolver]" or (name == "[Silencer]" or name == "[Glock]")) and "Pistols" or "Others")
+    end
+
+    local function IsValidTarget(player, checkSettings)
+        if checkSettings["Knocked"] == true and Is_Knocked(player) then
+            return false
+        elseif checkSettings["Self Knocked"] == true and Is_Knocked(LocalPlayer) then
+            return false
+        else
+            return checkSettings["Visible"] ~= true or CheckVisibility(player.Character.Head.Position, { player.Character, Players.LocalPlayer.Character, Camera }) ~= false
+        end
+    end
+
+    local function GetClosestPlayer(checkSettings)
+        local shortestDistance = math.huge
+        local closestPlayer = nil
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= Players.LocalPlayer and (player.Character and (player.Character:FindFirstChild("HumanoidRootPart") and IsValidTarget(player, checkSettings) == true)) then
+                local screenPos, onScreen = WorldToScreen(player.Character:FindFirstChild("HumanoidRootPart").Position)
+                if onScreen then
+                    local distance = (screenPos - GetMousePos()).Magnitude
+                    if distance <= shortestDistance then
+                        closestPlayer = player
+                        shortestDistance = distance
+                    end
+                end
+            end
+        end
+        return closestPlayer
+    end
+
+    local function GetClosestPointOnScreen(points)
+        local shortestDistance = math.huge
+        local closestPoint = nil
+        for _, point in ipairs(points) do
+            local screenPos, _ = Camera:WorldToScreenPoint(point)
+            local distance = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+            if distance < shortestDistance then
+                closestPoint = point
+                shortestDistance = distance
+            end
+        end
+        return closestPoint
+    end
+
+    local function GetClosestPointInParts(parts, scale)
+        local points = {}
+        for _, part in pairs(parts) do
+            for x = 0, part.Size.X - scale, scale do
+                for y = 0, part.Size.Y - scale, scale do
+                    for z = 0, part.Size.Z - scale, scale do
+                        local point = part.CFrame * CFrame.new(-part.Size / 2 + Vector3.new(scale / 2, scale / 2, scale / 2) + Vector3.new(x, y, z)).Position
+                        table.insert(points, point)
+                    end
+                end
+            end
+        end
+        return GetClosestPointOnScreen(points) or parts[1].Position
+    end
+
+    local function GetClosestBodyPart(character)
+        if not character then return nil end
+        local children = character:GetChildren()
+        local closestPart = nil
+        local shortestDistance = math.huge
+        
+        if children then
+            for _, child in pairs(children) do
+                if child:IsA("Part") or child:IsA("MeshPart") then
+                    local screenPos, _ = WorldToScreen(child.Position)
+                    local distance = (screenPos - GetMousePos()).Magnitude
+                    if distance <= shortestDistance then
+                        closestPart = child
+                        shortestDistance = distance
+                    end
+                end
+            end
+        end
+
+        -- Priority checks logic
+        local finalPart
+        if closestPart.Name == "LeftHand" then
+            local parent = closestPart.Parent
+            if parent:FindFirstChild("Humanoid") then
+                finalPart = parent.LeftUpperLeg
+                local s1, _ = Camera:WorldToScreenPoint(finalPart.Position)
+                local s2, _ = Camera:WorldToScreenPoint(closestPart.Position)
+                if (Vector2.new(Mouse.Y, 0) - Vector2.new(s1.Y, 0)).Magnitude >= (Vector2.new(Mouse.Y, 0) - Vector2.new(s2.Y, 0)).Magnitude then
+                    finalPart = closestPart
+                end
+            else
+                finalPart = closestPart
+            end
+        else
+            finalPart = closestPart
+        end
+
+        local finalPart2
+        if finalPart.Name == "RightHand" then
+            local parent = finalPart.Parent
+            if parent:FindFirstChild("Humanoid") then
+                finalPart2 = parent.RightUpperLeg
+                local s1, _ = Camera:WorldToScreenPoint(finalPart2.Position)
+                local s2, _ = Camera:WorldToScreenPoint(finalPart.Position)
+                if (Vector2.new(Mouse.Y, 0) - Vector2.new(s1.Y, 0)).Magnitude >= (Vector2.new(Mouse.Y, 0) - Vector2.new(s2.Y, 0)).Magnitude then
+                    finalPart2 = finalPart
+                end
+            else
+                finalPart2 = finalPart
+            end
+        else
+            finalPart2 = finalPart
+        end
+
+        local finalPart3
+        if finalPart2.Name == "RightUpperArm" then
+            local parent = finalPart2.Parent
+            if parent:FindFirstChild("Humanoid") then
+                finalPart3 = parent.Head
+                local s1, _ = Camera:WorldToScreenPoint(finalPart3.Position)
+                local s2, _ = Camera:WorldToScreenPoint(finalPart2.Position)
+                if (Vector2.new(Mouse.Y, 0) - Vector2.new(s1.Y, 0)).Magnitude >= (Vector2.new(Mouse.Y, 0) - Vector2.new(s2.Y, 0)).Magnitude then
+                    finalPart3 = finalPart2
+                end
+            else
+                finalPart3 = finalPart2
+            end
+        else
+            finalPart3 = finalPart2
+        end
+
+        local finalPart4
+        if finalPart3.Name == "LeftUpperArm" then
+            local parent = finalPart3.Parent
+            if parent:FindFirstChild("Humanoid") then
+                finalPart4 = parent.Head
+                local s1, _ = Camera:WorldToScreenPoint(finalPart4.Position)
+                local s2, _ = Camera:WorldToScreenPoint(finalPart3.Position)
+                if (Vector2.new(Mouse.Y, 0) - Vector2.new(s1.Y, 0)).Magnitude >= (Vector2.new(Mouse.Y, 0) - Vector2.new(s2.Y, 0)).Magnitude then
+                    finalPart4 = finalPart3
+                end
+            else
+                finalPart4 = finalPart3
+            end
+        else
+            finalPart4 = finalPart3
+        end
+
+        return finalPart4
+    end
+
+    local function GetTargetPart(character, forceClosest)
+        if forceClosest then
+            return GetClosestBodyPart(character)
+        end
+        if character then
+            local children = character:GetChildren()
+            local closestPart = nil
+            local shortestDistance = math.huge
+            if children then
+                for _, child in pairs(children) do
+                    if child:IsA("Part") or child:IsA("MeshPart") then
+                        local screenPos, _ = WorldToScreen(child.Position)
+                        local distance = (screenPos - GetMousePos()).Magnitude
+                        if distance <= shortestDistance then
+                            closestPart = child
+                            shortestDistance = distance
+                        end
+                    end
+                end
+            end
+            return closestPart
+        end
+    end
+
+    local function DeepCopy(target, source)
+        for k, v in pairs(source) do
+            target[k] = v
+        end
+        return target
+    end
+
+    local function CheckRaycast(cframe, size)
+        local part = DeepCopy(Instance.new("Part", workspace), {
+            ["CFrame"] = cframe,
+            ["CanCollide"] = false,
+            ["Anchored"] = true,
+            ["Transparency"] = 1,
+            ["Size"] = size
+        })
+        local mousePos = Mouse.Hit.Position
+        local camPos = Camera.CFrame.Position
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Whitelist
+        params.IgnoreWater = true
+        params.FilterDescendantsInstances = { part }
+        
+        local result = workspace:Raycast(camPos, (mousePos - camPos).Unit * 1000, params)
+        part:Destroy()
+        return result and true or false
+    end
+
+    local function GetCameraMode()
+        return (Camera.CFrame.Position - Camera.Focus.Position).Magnitude < 0.6 and "First Person" or (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter and "Shift Lock" or "Third Person")
+    end
+
+    local function DisconnectConnection(name)
+        if Connections[name] then
+            Connections[name]:Disconnect()
+            Connections[name] = nil
+        end
+    end
+
+    local function CalculateVelocity(part, time)
+        local initialPos = part.Position
+        task.wait(time)
+        return (part.Position - initialPos) / time
+    end
+
+    local function GetTargetVelocity(player)
+        if State.Velocities[player.Name] == nil then
+            return player.Character.HumanoidRootPart.Velocity
+        else
+            return State.Velocities[player.Name]
+        end
+    end
+
+    -- // Main Loop for Velocity Calculation
+    RunService.RenderStepped:Connect(function(_)
+        for _, player in pairs(Players:GetPlayers()) do
+            pcall(function()
+                if player.Character.HumanoidRootPart.Velocity.Magnitude < settings["Helpers"]["Velocity Calculation"]["Magnitude Threshold"] then
+                    if State.Velocities[player.Name] ~= nil then
+                        State.Velocities[player.Name] = nil
+                    end
+                else
+                    State.Velocities[player.Name] = CalculateVelocity(player.Character.HumanoidRootPart, 0.1)
+                end
+            end)
+        end
+        if settings["Helpers"]["Velocity Calculation"]["Enabled"] == false then
+            State.Velocities = {}
+        end
+    end)
+
+    local function OnCharacterAdded(newCharacter)
+        task.wait()
+        if State.CurrentCharacter2 ~= newCharacter then
+            State.CurrentCharacter2 = newCharacter
+            for _, connName in pairs({ "Slowdown Modifications" }) do
+                DisconnectConnection(connName)
+            end
+            
+            task.spawn(function()
+                local bodyEffects = newCharacter:WaitForChild("BodyEffects", 8999999488)
+                local movement = bodyEffects and bodyEffects:WaitForChild("Movement", 8999999488)
+                
+                if movement then
+                    Connections["Slowdown Modifications"] = movement.ChildAdded:Connect(function(child)
+                        task.wait(0.001)
+                        if child.Name == "ReduceWalk" then
+                            local tool = newCharacter:FindFirstChildWhichIsA("Tool")
+                            if tool and (settings["Modifications"]["Movement"]["Slowdown"]["Enabled"] and settings["Modifications"]["Movement"]["Slowdown"]["Weapons"][tool.Name]) then
+                                local multiplier = settings["Modifications"]["Movement"]["Slowdown"]["Weapons"][tool.Name].Multiplier
+                                local cooldown = State.Cooldowns[tool.Name].Cooldown * multiplier
+                                
+                                task.spawn(function()
+                                    task.wait(cooldown)
+                                    child.Parent = ReplicatedStorage
+                                end)
+                            end
+                        end
+                    end)
+                end
+                
+                local humanoid = newCharacter:WaitForChild("Humanoid", 8999999488)
+                if humanoid then
+                    local speedChanged = false
+                    if settings["Modifications"]["Movement"]["Speed"]["Enabled"] then
+                        humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+                            if speedChanged == false then
+                                speedChanged = true
+                                humanoid.WalkSpeed = humanoid.WalkSpeed * State["Speed Modifications"]["Current Multiplier"]
+                                speedChanged = false
+                            end
+                        end)
+                    end
+                end
+            end)
+        end
+    end
+
+    if Players.LocalPlayer.Character then
+        OnCharacterAdded(Players.LocalPlayer.Character)
+    end
+    Connections["Character Added"] = LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
+
+    -- // Loop for Speed Modifications
+    coroutine.resume(coroutine.create(function()
+        if settings["Modifications"]["Movement"]["Speed"]["Enabled"] then
+            while task.wait(0.015) do
+                pcall(function()
+                    local character = Players.LocalPlayer.Character
+                    local bodyEffects = character and character:FindFirstChild("BodyEffects")
+                    if bodyEffects then
+                        State["Speed Modifications"]["Current Multiplier"] = bodyEffects.Reload.Value and settings["Modifications"]["Movement"]["Speed"]["Multipliers"]["Reloading"] or bodyEffects.Movement:FindFirstChild("ReduceWalk") and settings["Modifications"]["Movement"]["Speed"]["Multipliers"]["Shooting"] or (character.Humanoid.Health < 55 and settings["Modifications"]["Movement"]["Speed"]["Multipliers"]["Low Health"] or settings["Modifications"]["Movement"]["Speed"]["Multipliers"]["Normal"])
+                    end
+                end)
+            end
+        end
+    end))
+
+    -- // Input Handling
+    Connections["Input Began"] = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed == false and (settings["Trigger Bot"]["Enabled"] and (settings["Trigger Bot"]["Activation"]["Mode"] == "Toggle" and input.KeyCode == Enum.KeyCode[settings["Trigger Bot"]["Activation"]["Keybind"]])) then
+            State["Triggerbot"]["Key Toggled"] = not State["Triggerbot"]["Key Toggled"]
+        end
+        
+        if gameProcessed == false and input.KeyCode == Enum.KeyCode[settings["Global"]["Keybind"]] then
+            local target = GetClosestPlayer(settings["Global"]["Checks"]["On Select"])
+            
+            if State.Target ~= nil or not target then
+                local _ = State.Target == nil
+                target = nil
+            end
+            
+            State.Target = target
+            
+            if State.Target then
+                local currentHealth = State.Target.Character.Humanoid.Health
+                Connections["Health Changed"] = State.Target.Character.Humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+                    local newHealth = State.Target.Character.Humanoid.Health
+                    if newHealth < currentHealth then
+                        LastHealthChange = tick()
+                    end
+                    currentHealth = newHealth
+                end)
+                return
+            end
+            DisconnectConnection("Health Changed")
+        end
+    end)
+
+    -- // Main Render Loop (Camera Aimbot)
+    Connections["Each Frame"] = RunService.RenderStepped:Connect(function(_)
+        task.spawn(function()
+            if settings["Aimbot"]["Camera"]["Enabled"] and (State.Target and settings["Aimbot"]["Camera"]["Camera Modes"][GetCameraMode()]) then
+                if UserInputService:GetFocusedTextBox() then
+                    return
+                end
+                local tool = LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+                if tool == nil then
+                    return
+                end
+                
+                local hitPart = settings["Aimbot"]["Camera"]["Target Part"] == "Closest Part" and GetTargetPart(State.Target.Character, false)
+                if not hitPart then
+                    if settings["Aimbot"]["Camera"]["Target Part"] == "Closest Part" then
+                        hitPart = false
+                    else
+                        hitPart = State.Target.Character[settings["Aimbot"]["Camera"]["Target Part"]]
+                    end
+                end
+                
+                local partPos = hitPart.Position
+                if hitPart == nil or partPos == nil then
+                    return
+                end
+                
+                local velocity = GetTargetVelocity(State.Target)
+                local predictedPos = Vector3.new(partPos.X + (velocity.X * settings["Aimbot"]["Camera"]["Prediction"].X), partPos.Y + (velocity.Y * settings["Aimbot"]["Camera"]["Prediction"].Y), partPos.Z + (velocity.Z * settings["Aimbot"]["Camera"]["Prediction"].Z))
+                
+                local fovConfig = settings["Aimbot"]["Camera"]["FOV"]
+                local fovSize = fovConfig.Size
+                
+                if fovConfig["Weapon Specific"]["Enabled"] then
+                    local weaponCat = GetWeaponCategory(tool)
+                    if settings["Aimbot"]["Camera"]["FOV"]["Weapon Specific"][weaponCat] then
+                        fovSize = fovConfig["Weapon Specific"][weaponCat]
+                    end
+                end
+                
+                local fovVector = Vector3.new(fovSize.X, fovSize.Y, fovSize.Z)
+                
+                if CheckVisibility(hitPart.Position, { State.Target.Character, Players.LocalPlayer.Character, Camera }) and (fovConfig["Enabled"] == false or CheckRaycast(State.Target.Character.HumanoidRootPart.CFrame, fovVector)) then
+                    Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, predictedPos), settings["Aimbot"]["Camera"]["Smoothness"])
+                end
+            end
+        end)
+
+        -- // Silent Aim Logic
+        local AimFunctions = {
+            ["getAim"] = function(origin)
+                local destination = Mouse.Hit.Position
+                
+                if settings["Aimbot"]["Silent"]["Enabled"] and (State.Target ~= nil and not table.find(State.Blacklisted, State.Target.UserId)) then
+                    local tool = LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+                    local targetChar = State.Target.Character
+                    local hitMethod = settings["Aimbot"]["Silent"]["Target Part"]
+                    local targetPos = nil
+                    
+                    if targetChar then
+                        if hitMethod == "Closest Part" then
+                            targetPos = GetTargetPart(targetChar).Position
+                        end
+                        if hitMethod == "Closest Point" then
+                            if settings["Aimbot"]["Silent"]["Closest Point"]["Mode"] == "Advanced" then
+                                local parts = {}
+                                for _, part in pairs(targetChar:GetDescendants()) do
+                                    if part:IsA("BasePart") or part:IsA("MeshPart") then
+                                        parts[#parts + 1] = part
+                                    end
+                                end
+                                targetPos = GetClosestPointInParts(parts, settings["Aimbot"]["Silent"]["Closest Point"]["Point Scale"])
+                            end
+                            if settings["Aimbot"]["Silent"]["Closest Point"]["Mode"] == "Normal" then
+                                targetPos = GetClosestPointInParts({ (GetTargetPart(targetChar)) }, settings["Aimbot"]["Silent"]["Closest Point"]["Point Scale"])
+                            end
+                        end
+                    end
+                    
+                    if targetPos == nil then
+                        targetPos = targetChar[hitMethod].Position
+                    end
+                    
+                    if targetPos then
+                        local fovConfig = settings["Aimbot"]["Silent"]["FOV"]
+                        local fovSize = fovConfig.Size
+                        
+                        if fovConfig["Weapon Specific"]["Enabled"] then
+                            local weaponCat = GetWeaponCategory(tool)
+                            if settings["Aimbot"]["Silent"]["FOV"]["Weapon Specific"][weaponCat] then
+                                fovSize = fovConfig["Weapon Specific"][weaponCat]
+                            end
+                        end
+                        
+                        local fovVector = Vector3.new(fovSize.X, fovSize.Y, fovSize.Z)
+                        
+                        if fovConfig["Enabled"] == false or CheckRaycast(targetChar.HumanoidRootPart.CFrame, fovVector) then
+                            local velocity = GetTargetVelocity(State.Target)
+                            local prediction = GetPrediction()
+                            destination = Vector3.new(targetPos.X + (velocity.X * prediction.X), targetPos.Y + (velocity.Y * prediction.Y), targetPos.Z + (velocity.Z * prediction.Z))
+                        end
+                    end
+                end
+                return (destination - origin).Unit
+            end
+        }
+
+        local function HookCharacter(character)
+            if State.CurrentCharacter ~= character then
+                State.CurrentCharacter = character
+                character.ChildAdded:Connect(function(child)
+                    
+                    if State.Overwritten[child] == nil then
+                        State.Overwritten[child] = true
+                        
+                        if child:FindFirstChild("GunClient") then
+                            child.GunClient:Destroy()
+                            
+                            local offsetCFrame = CFrame.new(-1, 0.4, 0)
+                            local handle = child:WaitForChild("Handle")
+                            local char = Players.LocalPlayer.Character
+                            local _ = child.Handle.ShootSound
+                            local ammo = child.Ammo
+                            local range = child:WaitForChild("Range")
+                            local cooldown = child:WaitForChild("ShootingCooldown").Value
+                            local gunHandler = require(ReplicatedStorage.Modules.GunHandler)
+                            local maid = require(ReplicatedStorage.Modules.Maid).new()
+                            local remote = child:WaitForChild("RemoteEvent", 2) or {
+                                ["FireServer"] = function(_, _) end
+                            }
+                            
+                            maid:GiveTask(child.AncestryChanged:Connect(function()
+                                if child.Parent ~= char and child.Parent ~= Players.LocalPlayer:FindFirstChildWhichIsA("Backpack") then
+                                    maid:DoCleaning()
+                                end
+                            end))
+                            
+                            local lastShot = 0
+                            maid:GiveTask(child.Activated:Connect(function()
+                                if tick() - lastShot >= cooldown + 0.02 and (ammo.Value >= 1 and (not _G.GUN_COMBAT_TOGGLE and gunHandler.getCanShoot(char))) then
+                                    lastShot = tick()
+                                    remote:FireServer("Shoot")
+                                    
+                                    local origin = (handle.CFrame * offsetCFrame).Position
+                                    local muzzle = child:FindFirstChild("Default") and (child.Default:FindFirstChild("Mesh") and child.Default.Mesh:FindFirstChild("Muzzle"))
+                                    if not muzzle then
+                                        muzzle = { ["WorldPosition"] = origin }
+                                    end
+                                    
+                                    local aimPos = muzzle.WorldPosition + AimFunctions.getAim(muzzle.WorldPosition) * 200
+                                    local p1, p2, p3 = gunHandler.shoot({
+                                        ["Shooter"] = char,
+                                        ["Handle"] = handle,
+                                        ["ForcedOrigin"] = origin,
+                                        ["AimPosition"] = aimPos,
+                                        ["BeamColor"] = Color3.new(1, 0.545098, 0.14902),
+                                        ["Range"] = range.Value
+                                    })
+                                    
+                                    ReplicatedStorage.MainEvent:FireServer("ShootGun", handle, muzzle.WorldPosition, p1, p2, p3)
+                                    remote:FireServer()
+                                end
+                            end))
+                        end
+
+                        if child:FindFirstChild("GunClientShotgun") then
+                            child.GunClientShotgun:Destroy()
+                            
+                            local bullets = State["Shotguns"][child.Name].Bullets
+                            local offset = State["Shotguns"][child.Name].Offset
+                            local handle = child:WaitForChild("Handle")
+                            local char = Players.LocalPlayer.Character
+                            local _ = child.Handle.ShootSound
+                            local ammo = child.Ammo
+                            local range = child:WaitForChild("Range")
+                            local cooldown = child:WaitForChild("ShootingCooldown").Value
+                            local gunHandler = require(ReplicatedStorage.Modules.GunHandler)
+                            local maid = require(ReplicatedStorage.Modules.Maid).new()
+                            local remote = child:WaitForChild("RemoteEvent", 2) or {
+                                ["FireServer"] = function(_, _) end
+                            }
+                            
+                            maid:GiveTask(child.AncestryChanged:Connect(function()
+                                if child.Parent ~= char and child.Parent ~= Players.LocalPlayer:FindFirstChildWhichIsA("Backpack") then
+                                    maid:DoCleaning()
+                                end
+                            end))
+                            
+                            local lastShot = 0
+                            maid:GiveTask(child.Activated:Connect(function()
+                                if tick() - lastShot >= cooldown + 0.0095 + 0.05 and (ammo.Value >= 1 and (not _G.GUN_COMBAT_TOGGLE and gunHandler.getCanShoot(char))) then
+                                    lastShot = tick()
+                                    remote:FireServer("Shoot")
+                                    local serverTime = workspace:GetServerTimeNow()
+                                    
+                                    -- // SPREAD MODIFIER LOGIC
+                                    local spreadMultiplier = 1
+                                    if settings["Modifications"]["Spread"]["Enabled"] then
+                                        local weaponSpreadData = settings["Modifications"]["Spread"]["Weapons"][child.Name]
+                                        if weaponSpreadData then
+                                            spreadMultiplier = weaponSpreadData["Multiplier"]
+                                        else
+                                            spreadMultiplier = settings["Modifications"]["Spread"]["Default Multiplier"]
+                                        end
+                                    end
+
+                                    for _ = 1, bullets do
+                                        local spreadX = (math.random() > 0.5 and math.random() * 0.05 or -math.random() * 0.05) * spreadMultiplier
+                                        local spreadY = (math.random() > 0.5 and math.random() * 0.1 or -math.random() * 0.1) * spreadMultiplier
+                                        local spreadZ = (math.random() > 0.5 and math.random() * 0.05 or -math.random() * 0.05) * spreadMultiplier
+                                        local spread = Vector3.new(spreadX, spreadY, spreadZ)
+
+                                        local origin = (handle.CFrame * offset).Position
+                                        local muzzle = child:FindFirstChild("Default") and (child.Default:FindFirstChild("Mesh") and child.Default.Mesh:FindFirstChild("Muzzle")) or { ["WorldPosition"] = origin }
+                                        
+                                        local aimPos = muzzle.WorldPosition + (AimFunctions.getAim(muzzle.WorldPosition) + spread) * range.Value
+                                        local p1, p2, p3 = gunHandler.shoot({
+                                            ["Shooter"] = char,
+                                            ["Handle"] = handle,
+                                            ["ForcedOrigin"] = origin,
+                                            ["AimPosition"] = aimPos,
+                                            ["BeamColor"] = Color3.new(1, 0.545098, 0.14902),
+                                            ["Range"] = range.Value
+                                        })
+                                        ReplicatedStorage.MainEvent:FireServer("ShootGun", handle, muzzle.WorldPosition, p1, p2, p3, serverTime)
+                                    end
+                                    remote:FireServer()
+                                end
+                            end))
+                        end
+                    end
+                    
+                    if child:FindFirstChild("GunClientBurst") then
+                        child.GunClientBurst:Destroy()
+                        
+                        local offsetCFrame = CFrame.new(-0.1, 0.4, 1.8)
+                        local handle = child:WaitForChild("Handle")
+                        local char = Players.LocalPlayer.Character
+                        local _ = child.Handle.ShootSound
+                        local ammo = child.Ammo
+                        local range = child:WaitForChild("Range")
+                        local shootCooldown = child:WaitForChild("ShootingCooldown").Value
+                        local toleranceCooldown = child:WaitForChild("ToleranceCooldown").Value
+                        local gunHandler = require(ReplicatedStorage.Modules.GunHandler)
+                        local maid = require(ReplicatedStorage.Modules.Maid).new()
+                        local remote = child:WaitForChild("RemoteEvent", 2) or {
+                            ["FireServer"] = function(_, _) end
+                        }
+                        
+                        maid:GiveTask(child.AncestryChanged:Connect(function()
+                            if child.Parent ~= char and child.Parent ~= Players.LocalPlayer:FindFirstChildWhichIsA("Backpack") then
+                                maid:DoCleaning()
+                            end
+                        end))
+                        
+                        local lastShot = 0
+                        maid:GiveTask(child.Activated:Connect(function()
+                            if tick() - lastShot >= toleranceCooldown and (not _G.GUN_COMBAT_TOGGLE and gunHandler.getCanShoot(char)) then
+                                lastShot = tick()
+                                remote:FireServer("Shoot")
+                                local serverTime = workspace:GetServerTimeNow()
+                                
+                                task.spawn(function()
+                                    for _ = 1, ammo.Value > 3 and 3 or ammo.Value do
+                                        local origin = (handle.CFrame * offsetCFrame).Position
+                                        local muzzle = child:FindFirstChild("Default") and (child.Default:FindFirstChild("Mesh") and child.Default.Mesh:FindFirstChild("Muzzle")) or { ["WorldPosition"] = origin }
+                                        
+                                        local aimPos = muzzle.WorldPosition + AimFunctions.getAim(muzzle.WorldPosition) * 200
+                                        local p1, p2, p3 = gunHandler.shoot({
+                                            ["Shooter"] = char,
+                                            ["Handle"] = handle,
+                                            ["ForcedOrigin"] = origin,
+                                            ["AimPosition"] = aimPos,
+                                            ["BeamColor"] = Color3.new(1, 0.545098, 0.14902),
+                                            ["Range"] = range.Value
+                                        })
+                                        ReplicatedStorage.MainEvent:FireServer("ShootGun", handle, muzzle.WorldPosition, p1, p2, p3, serverTime)
+                                        task.wait(shootCooldown + 0.0095)
+                                    end
+                                    remote:FireServer()
+                                end)
+                                remote:FireServer()
+                            end
+                        end))
+                    end
+                end)
+            end
+        end
+        
+        if Players.LocalPlayer.Character then
+            HookCharacter(Players.LocalPlayer.Character)
+        end
+        Players.LocalPlayer.CharacterAdded:Connect(HookCharacter)
+        
+        -- // Trigger Bot Execution
+        task.spawn(function()
+            if settings["Trigger Bot"]["Enabled"] and State.Target and (settings["Trigger Bot"]["Activation"]["Mode"] == "Hold" and UserInputService:IsKeyDown(Enum.KeyCode[settings["Trigger Bot"]["Activation"]["Keybind"]]) or (settings["Trigger Bot"]["Activation"]["Mode"] == "Always" or settings["Trigger Bot"]["Activation"]["Mode"] == "Toggle" and State["Triggerbot"]["Key Toggled"])) then
+                local fovConfig = settings["Trigger Bot"]["FOV"]
+                local fovVector = Vector3.new(fovConfig.X, fovConfig.Y, fovConfig.Z)
+                
+                local targetRoot = State.Target.Character.HumanoidRootPart.CFrame
+                local velocity = GetTargetVelocity(State.Target)
+                local predictedPos = Vector3.new(targetRoot.X + (velocity.X * settings["Trigger Bot"]["Prediction"].X), targetRoot.Y + (velocity.Y * settings["Trigger Bot"]["Prediction"].Y), targetRoot.Z + (velocity.Z * settings["Trigger Bot"]["Prediction"].Z))
+                
+                if tick() - State["Triggerbot"]["Last Click"] >= settings["Trigger Bot"]["Click Cooldown"] and (CheckRaycast(CFrame.new(predictedPos), fovVector) and CheckVisibility(State.Target.Character.Head.Position, { State.Target.Character, Players.LocalPlayer.Character, Camera })) then
+                    local tool = Players.LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+                    if table.find(settings["Trigger Bot"]["Weapons"], tool.Name) then
+                        tool:Activate()
+                        State["Triggerbot"]["Last Click"] = tick()
+                    end
+                end
+            end
+        end)
+
+        -- // Target Cleanup Check
+        task.spawn(function()
+            if State.Target and IsValidTarget(State.Target, settings["Global"]["Checks"]["On Update"]) == false then
+                State.Target = nil
+                DisconnectConnection("Health Changed")
+            end
+        end)
+
+        -- // Sync Config with Shared
+        task.spawn(function()
+            if shared.Saved and settings ~= shared.Saved then
+                settings = shared.Saved
+            end
+        end)
+    end)
+end
