@@ -1,6 +1,6 @@
 {
-  "FakeDataModelPointer": "0x7D03628",
-  "EnableLoadModule": "0x679D8F8",
+  "FakeDataModelPointer": "0x8006F88",
+  "EnableLoadModule": "0x68158D0ddddd",
   "FakeDataModelToRealDataModel": "0x1C0",
   "Children": "0x70",
   "ClassDescriptor": "0x18",
@@ -9,5 +9,5 @@
   "ChildrenSize": "0x8",
   "LocalPlayer": "0x130",
   "ModuleScriptBytecode": "0x150",
-  "Version" : "version-5b077c09380f4fe6"
+  "Version" : "version-89d89cb2d6b649be"
 }
