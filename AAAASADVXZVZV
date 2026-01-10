@@ -1,6 +1,6 @@
 {
   "FakeDataModelPointer": "0x8006F88",
-  "EnableLoadModule": "0x68158D0ddddd",
+  "EnableLoadModule": "0x68158D0",
   "FakeDataModelToRealDataModel": "0x1C0",
   "Children": "0x70",
   "ClassDescriptor": "0x18",
